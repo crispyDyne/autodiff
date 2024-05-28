@@ -1,22 +1,35 @@
-use autodiff::backwards::RcVar;
+use autodiff::backwards::{Graph, Rev64};
 
 fn main() {
-    let x = RcVar::new(2.0);
-    let y = RcVar::new(3.0);
-    let z = &(10.0 * &x) + &y;
-    let w = &(10.0 * &x) * &y;
+    let x = Rev64::new(2.0); // id = 0
+    let y = Rev64::new(3.0); // id = 1
+    let a = 10.0; // id = 2
+    let b = 10.0; // id = 3
+    let mut z = (a * x) + y; // (a * x) id = 4
+    let mut w = (b * x) * y; // (b * x) id = 5
 
-    // Perform the backward pass wrt `z`
-    z.backward(); // Trigger the backward pass
-    println!("x.grad: {:?}", x.grad.borrow());
-    println!("y.grad: {:?}", y.grad.borrow());
+    // Perform the backward pass wrt `z` and print the gradients
+    z.backward();
+    println!(
+        "Gradient of z w.r.t x: {}",
+        Graph::instance().get_variable(x.id).grad
+    );
+    println!(
+        "Gradient of z w.r.t y: {}",
+        Graph::instance().get_variable(y.id).grad
+    );
 
     // Reset the gradients
-    *x.grad.borrow_mut() = 0.0;
-    *y.grad.borrow_mut() = 0.0;
+    Graph::instance().reset_gradients();
 
-    // Perform the backward pass wrt `w`
-    w.backward(); // Trigger the backward pass
-    println!("x.grad: {:?}", x.grad.borrow()); // 3.0
-    println!("y.grad: {:?}", y.grad.borrow()); // 2.0
+    // Perform the backward pass wrt `w` and print the gradients
+    w.backward();
+    println!(
+        "Gradient of w w.r.t x: {}",
+        Graph::instance().get_variable(x.id).grad
+    );
+    println!(
+        "Gradient of w w.r.t y: {}",
+        Graph::instance().get_variable(y.id).grad
+    );
 }
