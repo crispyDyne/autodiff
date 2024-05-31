@@ -241,6 +241,10 @@ impl Graph {
             var.grad = 0.0;
         }
     }
+
+    pub fn size(&self) -> usize {
+        self.variables.lock().unwrap().len()
+    }
 }
 
 impl Mul<Rev64> for f64 {
