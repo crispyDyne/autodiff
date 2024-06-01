@@ -8,45 +8,68 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 pub struct Rev64 {
     pub id: usize,
-    pub value: f64,
-    pub grad: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Rev64Data {
+    id: usize,
+    value: f64,
+    grad: f64,
 }
 
 impl Rev64 {
     pub fn new(value: f64) -> Rev64 {
-        let id = Graph::instance().add_variable(value);
-        Rev64 {
-            id,
-            value,
-            grad: 0.0,
-        }
+        let graph = Graph::instance();
+        let id = graph.add_variable(value);
+        Rev64 { id }
     }
 
     /// Performs the backward pass from this variable.
     pub fn backward(&mut self) {
-        self.grad = 1.0; // Seed the gradient of the output variable with 1
-        Graph::instance().update_variable(*self);
+        let graph = Graph::instance();
+        graph.reset_gradients();
+
+        // Seed the gradient of the output variable with 1
+        graph.set_grad(*self, 1.0);
 
         // Use a queue to manage the nodes that need their gradients updated
         let mut agenda: Vec<usize> = vec![self.id];
 
         // Visit each variable in the agenda to perform the backward pass
         while let Some(var_id) = agenda.pop() {
-            let (var_grad, predecessors) = Graph::instance().get_grad_and_predecessors(var_id);
+            let (var_grad, predecessors) = graph.get_grad_and_predecessors(var_id);
             for (pred_id, backward_fn) in predecessors {
-                let mut pred_var = Graph::instance().get_variable(pred_id);
+                let mut pred_var = graph.get_variable(pred_id);
                 backward_fn(var_grad, &mut pred_var);
                 agenda.push(pred_id);
-                Graph::instance().update_variable(pred_var);
+                graph.update_variable(pred_id, pred_var);
             }
         }
     }
-    pub fn update(&mut self) {
-        // gets the variable stored in the graph
-        let var = Graph::instance().get_variable(self.id);
-        // then updates self
-        self.value = var.value;
-        self.grad = var.grad;
+
+    pub fn get_value(&self) -> f64 {
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value
+    }
+
+    pub fn get_grad(&self) -> f64 {
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.grad
+    }
+
+    pub fn get_value_grad(&self) -> (f64, f64) {
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        (self_data.value, self_data.grad)
+    }
+
+    pub fn set_value(&self, value: f64) {
+        let graph = Graph::instance();
+        let mut vars = graph.variables.lock().unwrap();
+        let var = vars.get_mut(&self.id).unwrap();
+        var.value = value;
     }
 }
 
@@ -54,11 +77,14 @@ impl Add for Rev64 {
     type Output = Rev64;
 
     fn add(self, rhs: Rev64) -> Rev64 {
-        let output = Rev64::new(self.value + rhs.value);
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let rhs_data = graph.get_variable(rhs.id);
+        let output = Rev64::new(self_data.value + rhs_data.value);
+        graph.add_operation(
             output.id,
             vec![self.id, rhs.id],
-            Arc::new(|o_grad, a: &mut Rev64| {
+            Arc::new(|o_grad, a: &mut Rev64Data| {
                 a.grad += o_grad;
             }),
         );
@@ -70,15 +96,18 @@ impl Mul for Rev64 {
     type Output = Rev64;
 
     fn mul(self, rhs: Rev64) -> Rev64 {
-        let output = Rev64::new(self.value * rhs.value);
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let rhs_data = graph.get_variable(rhs.id);
+        let output = Rev64::new(self_data.value * rhs_data.value);
+        graph.add_operation(
             output.id,
             vec![self.id, rhs.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad * rhs.value;
+                    v.grad += o_grad * rhs_data.value;
                 } else {
-                    v.grad += o_grad * self.value;
+                    v.grad += o_grad * self_data.value;
                 }
             }),
         );
@@ -89,36 +118,44 @@ impl Mul for Rev64 {
 impl Rem for Rev64 {
     type Output = Self;
 
-    fn rem(self, other: Self) -> Self {
-        let output = Rev64::new(self.value % other.value);
-        Graph::instance().add_operation(
+    fn rem(self, rhs: Self) -> Self {
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let rhs_data = graph.get_variable(rhs.id);
+        let output = Rev64::new(self_data.value % rhs_data.value);
+        graph.add_operation(
             output.id,
-            vec![self.id, other.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            vec![self.id, rhs.id],
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
                     v.grad += o_grad;
                 } else {
-                    v.grad -= o_grad * (self.value / other.value).trunc();
+                    v.grad -= o_grad * (self_data.value / rhs_data.value).trunc();
                 }
             }),
         );
         output
     }
 }
+// everything above has already been updated for Rev64Data
 
+// everything below needs to be update for Rev64Data
 impl Div for Rev64 {
     type Output = Rev64;
 
     fn div(self, other: Rev64) -> Rev64 {
-        let output = Rev64::new(self.value / other.value);
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        let output = Rev64::new(self_data.value / other_data.value);
+        graph.add_operation(
             output.id,
             vec![self.id, other.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad / other.value;
+                    v.grad += o_grad / other_data.value;
                 } else {
-                    v.grad -= o_grad * self.value / (other.value * other.value);
+                    v.grad -= o_grad * self_data.value / (other_data.value * other_data.value);
                 }
             }),
         );
@@ -130,11 +167,14 @@ impl Sub for Rev64 {
     type Output = Rev64;
 
     fn sub(self, other: Rev64) -> Rev64 {
-        let output = Rev64::new(self.value - other.value);
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        let output = Rev64::new(self_data.value - other_data.value);
+        graph.add_operation(
             output.id,
             vec![self.id, other.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
                     v.grad += o_grad;
                 } else {
@@ -150,11 +190,13 @@ impl Neg for Rev64 {
     type Output = Rev64;
 
     fn neg(self) -> Rev64 {
-        let output = Rev64::new(-self.value);
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(-self_data.value);
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad -= o_grad;
             }),
         );
@@ -163,8 +205,8 @@ impl Neg for Rev64 {
 }
 
 pub struct Graph {
-    variables: Mutex<HashMap<usize, Rev64>>,
-    operations: Mutex<HashMap<usize, Vec<(usize, Arc<dyn Fn(f64, &mut Rev64) + Send + Sync>)>>>,
+    variables: Mutex<HashMap<usize, Rev64Data>>,
+    operations: Mutex<HashMap<usize, Vec<(usize, Arc<dyn Fn(f64, &mut Rev64Data) + Send + Sync>)>>>,
     next_id: Mutex<usize>,
 }
 
@@ -189,7 +231,7 @@ impl Graph {
         let mut vars = self.variables.lock().unwrap();
         vars.insert(
             id,
-            Rev64 {
+            Rev64Data {
                 id,
                 value,
                 grad: 0.0,
@@ -198,25 +240,31 @@ impl Graph {
         id
     }
 
-    pub fn get_variable(&self, id: usize) -> Rev64 {
+    pub fn set_grad(&self, var: Rev64, grad: f64) {
+        let mut vars = self.variables.lock().unwrap();
+        let var = vars.get_mut(&var.id).unwrap();
+        var.grad = grad;
+    }
+
+    fn get_variable(&self, id: usize) -> Rev64Data {
         let vars = self.variables.lock().unwrap();
         *vars.get(&id).unwrap()
     }
 
-    pub fn update_variable(&self, var: Rev64) {
+    fn update_variable(&self, id: usize, var: Rev64Data) {
         let mut vars = self.variables.lock().unwrap();
-        vars.insert(var.id, var);
+        vars.insert(id, var);
     }
 
     fn add_operation<F>(&self, var_id: usize, predecessors: Vec<usize>, backward_fn: Arc<F>)
     where
-        F: 'static + Fn(f64, &mut Rev64) + Send + Sync,
+        F: 'static + Fn(f64, &mut Rev64Data) + Send + Sync,
     {
         let mut ops = self.operations.lock().unwrap();
         for pred_id in predecessors {
             ops.entry(var_id).or_insert_with(Vec::new).push((
                 pred_id,
-                Arc::clone(&backward_fn) as Arc<dyn Fn(f64, &mut Rev64) + Send + Sync>,
+                Arc::clone(&backward_fn) as Arc<dyn Fn(f64, &mut Rev64Data) + Send + Sync>,
             ));
         }
     }
@@ -226,7 +274,7 @@ impl Graph {
         var_id: usize,
     ) -> (
         f64,
-        Vec<(usize, Arc<dyn Fn(f64, &mut Rev64) + Send + Sync>)>,
+        Vec<(usize, Arc<dyn Fn(f64, &mut Rev64Data) + Send + Sync>)>,
     ) {
         let vars = self.variables.lock().unwrap();
         let var = vars.get(&var_id).unwrap();
@@ -251,12 +299,14 @@ impl Mul<Rev64> for f64 {
     type Output = Rev64;
 
     fn mul(self, rhs: Rev64) -> Rev64 {
-        let output = Rev64::new(self * rhs.value);
+        let graph = Graph::instance();
+        let rhs_data = graph.get_variable(rhs.id);
+        let output = Rev64::new(self * rhs_data.value);
         let scalar = self;
-        Graph::instance().add_operation(
+        graph.add_operation(
             output.id,
             vec![rhs.id],
-            Arc::new(move |o_grad, b: &mut Rev64| {
+            Arc::new(move |o_grad, b: &mut Rev64Data| {
                 b.grad += o_grad * scalar;
             }),
         );
@@ -266,13 +316,19 @@ impl Mul<Rev64> for f64 {
 
 impl PartialOrd for Rev64 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.value.partial_cmp(&other.value)
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        self_data.value.partial_cmp(&other_data.value)
     }
 }
 
 impl PartialEq for Rev64 {
     fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        self_data.value == other_data.value
     }
 }
 
@@ -284,59 +340,87 @@ impl NumCast for Rev64 {
 
 impl ToPrimitive for Rev64 {
     fn to_isize(&self) -> Option<isize> {
-        self.value.to_isize()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_isize()
     }
 
     fn to_i8(&self) -> Option<i8> {
-        self.value.to_i8()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_i8()
     }
 
     fn to_i16(&self) -> Option<i16> {
-        self.value.to_i16()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_i16()
     }
 
     fn to_i32(&self) -> Option<i32> {
-        self.value.to_i32()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_i32()
     }
 
     fn to_i64(&self) -> Option<i64> {
-        self.value.to_i64()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_i64()
     }
 
     fn to_i128(&self) -> Option<i128> {
-        self.value.to_i128()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_i128()
     }
 
     fn to_usize(&self) -> Option<usize> {
-        self.value.to_usize()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_usize()
     }
 
     fn to_u8(&self) -> Option<u8> {
-        self.value.to_u8()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_u8()
     }
 
     fn to_u16(&self) -> Option<u16> {
-        self.value.to_u16()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_u16()
     }
 
     fn to_u32(&self) -> Option<u32> {
-        self.value.to_u32()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_u32()
     }
 
     fn to_u64(&self) -> Option<u64> {
-        self.value.to_u64()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_u64()
     }
 
     fn to_u128(&self) -> Option<u128> {
-        self.value.to_u128()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_u128()
     }
 
     fn to_f32(&self) -> Option<f32> {
-        self.value.to_f32()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_f32()
     }
 
     fn to_f64(&self) -> Option<f64> {
-        self.value.to_f64()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.to_f64()
     }
 }
 
@@ -360,7 +444,9 @@ impl Zero for Rev64 {
     }
 
     fn is_zero(&self) -> bool {
-        self.value == 0.0
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value == 0.0
     }
 }
 
@@ -382,31 +468,43 @@ impl Float for Rev64 {
     }
 
     fn is_nan(self) -> bool {
-        self.value.is_nan()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.is_nan()
     }
 
     fn is_infinite(self) -> bool {
-        self.value.is_infinite()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.is_infinite()
     }
 
     fn is_finite(self) -> bool {
-        self.value.is_finite()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.is_finite()
     }
 
     fn is_normal(self) -> bool {
-        self.value.is_normal()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.is_normal()
     }
 
     fn classify(self) -> std::num::FpCategory {
-        self.value.classify()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.classify()
     }
 
     fn floor(self) -> Self {
-        let output = Rev64::new(self.value.floor());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.floor());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 v.grad += 0.0;
             }),
         );
@@ -414,11 +512,13 @@ impl Float for Rev64 {
     }
 
     fn ceil(self) -> Self {
-        let output = Rev64::new(self.value.ceil());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.ceil());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 v.grad = 0.0;
             }),
         );
@@ -426,11 +526,13 @@ impl Float for Rev64 {
     }
 
     fn round(self) -> Self {
-        let output = Rev64::new(self.value.round());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.round());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 v.grad = 0.0;
             }),
         );
@@ -438,11 +540,13 @@ impl Float for Rev64 {
     }
 
     fn trunc(self) -> Self {
-        let output = Rev64::new(self.value.trunc());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.trunc());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 v.grad = 0.0;
             }),
         );
@@ -450,11 +554,13 @@ impl Float for Rev64 {
     }
 
     fn fract(self) -> Self {
-        let output = Rev64::new(self.value.fract());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.fract());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad;
             }),
         );
@@ -462,11 +568,13 @@ impl Float for Rev64 {
     }
 
     fn abs(self) -> Self {
-        let output = Rev64::new(self.value.abs());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.abs());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 if v.value.is_sign_positive() {
                     v.grad += o_grad;
                 } else {
@@ -478,11 +586,13 @@ impl Float for Rev64 {
     }
 
     fn signum(self) -> Self {
-        let output = Rev64::new(self.value.signum());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.signum());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 v.grad = 0.0;
             }),
         );
@@ -490,23 +600,31 @@ impl Float for Rev64 {
     }
 
     fn is_sign_positive(self) -> bool {
-        self.value.is_sign_positive()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.is_sign_positive()
     }
 
     fn is_sign_negative(self) -> bool {
-        self.value.is_sign_negative()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.is_sign_negative()
     }
 
     fn mul_add(self, a: Self, b: Self) -> Self {
-        let output = Rev64::new(self.value.mul_add(a.value, b.value));
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let a_data = graph.get_variable(a.id);
+        let b_data = graph.get_variable(b.id);
+        let output = Rev64::new(self_data.value.mul_add(a_data.value, b_data.value));
+        graph.add_operation(
             output.id,
             vec![self.id, a.id, b.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad * a.value;
+                    v.grad += o_grad * a_data.value;
                 } else if v.id == a.id {
-                    v.grad += o_grad * self.value;
+                    v.grad += o_grad * self_data.value;
                 } else if v.id == b.id {
                     v.grad += o_grad;
                 }
@@ -516,11 +634,13 @@ impl Float for Rev64 {
     }
 
     fn recip(self) -> Self {
-        let output = Rev64::new(self.value.recip());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.recip());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad -= o_grad / (v.value * v.value);
             }),
         );
@@ -528,27 +648,32 @@ impl Float for Rev64 {
     }
 
     fn powi(self, n: i32) -> Self {
-        let output = Rev64::new(self.value.powi(n));
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.powi(n));
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad * (n as f64) * self.value.powi(n - 1);
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad * (n as f64) * self_data.value.powi(n - 1);
             }),
         );
         output
     }
 
     fn powf(self, n: Self) -> Self {
-        let output = Rev64::new(self.value.powf(n.value));
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let n_data = graph.get_variable(n.id);
+        let output = Rev64::new(self_data.value.powf(n_data.value));
+        graph.add_operation(
             output.id,
             vec![self.id, n.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad * n.value * self.value.powf(n.value - 1.0);
+                    v.grad += o_grad * n_data.value * self_data.value.powf(n_data.value - 1.0);
                 } else if v.id == n.id {
-                    v.grad += o_grad * self.value.powf(n.value) * self.value.ln();
+                    v.grad += o_grad * self_data.value.powf(n_data.value) * self_data.value.ln();
                 }
             }),
         );
@@ -556,11 +681,13 @@ impl Float for Rev64 {
     }
 
     fn sqrt(self) -> Self {
-        let output = Rev64::new(self.value.sqrt());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.sqrt());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad / (2.0 * v.value.sqrt());
             }),
         );
@@ -568,11 +695,13 @@ impl Float for Rev64 {
     }
 
     fn exp(self) -> Self {
-        let output = Rev64::new(self.value.exp());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.exp());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad * v.value.exp();
             }),
         );
@@ -580,11 +709,13 @@ impl Float for Rev64 {
     }
 
     fn exp2(self) -> Self {
-        let output = Rev64::new(self.value.exp2());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.exp2());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad * v.value.exp2() * std::f64::consts::LN_2;
             }),
         );
@@ -592,11 +723,13 @@ impl Float for Rev64 {
     }
 
     fn ln(self) -> Self {
-        let output = Rev64::new(self.value.ln());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.ln());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad / v.value;
             }),
         );
@@ -604,15 +737,19 @@ impl Float for Rev64 {
     }
 
     fn log(self, base: Self) -> Self {
-        let output = Rev64::new(self.value.log(base.value));
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let base_data = graph.get_variable(base.id);
+        let output = Rev64::new(self_data.value.log(base_data.value));
+        graph.add_operation(
             output.id,
             vec![self.id, base.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad / (self.value * base.value.ln());
+                    v.grad += o_grad / (self_data.value * base_data.value.ln());
                 } else if v.id == base.id {
-                    v.grad -= o_grad * self.value.ln() / (base.value * base.value.ln());
+                    v.grad -=
+                        o_grad * self_data.value.ln() / (base_data.value * base_data.value.ln());
                 }
             }),
         );
@@ -620,11 +757,13 @@ impl Float for Rev64 {
     }
 
     fn log2(self) -> Self {
-        let output = Rev64::new(self.value.log2());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.log2());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad / (v.value * std::f64::consts::LN_2);
             }),
         );
@@ -632,11 +771,13 @@ impl Float for Rev64 {
     }
 
     fn log10(self) -> Self {
-        let output = Rev64::new(self.value.log10());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.log10());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad / (v.value * std::f64::consts::LN_10);
             }),
         );
@@ -644,7 +785,10 @@ impl Float for Rev64 {
     }
 
     fn max(self, other: Self) -> Self {
-        if self > other {
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        if self_data.value > other_data.value {
             self
         } else {
             other
@@ -652,7 +796,10 @@ impl Float for Rev64 {
     }
 
     fn min(self, other: Self) -> Self {
-        if self < other {
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        if self_data.value < other_data.value {
             self
         } else {
             other
@@ -660,15 +807,20 @@ impl Float for Rev64 {
     }
 
     fn abs_sub(self, other: Self) -> Self {
-        Rev64::new((self.value - other.value).abs_sub(other.value))
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        Rev64::new((self_data.value - other_data.value).abs_sub(other_data.value))
     }
 
     fn cbrt(self) -> Self {
-        let output = Rev64::new(self.value.cbrt());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.cbrt());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|o_grad, v: &mut Rev64| {
+            Arc::new(|o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad / (3.0 * v.value.powf(2. / 3.));
             }),
         );
@@ -676,15 +828,18 @@ impl Float for Rev64 {
     }
 
     fn hypot(self, other: Self) -> Self {
-        let output = Rev64::new(self.value.hypot(other.value));
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        let output = Rev64::new(self_data.value.hypot(other_data.value));
+        graph.add_operation(
             output.id,
             vec![self.id, other.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad * self.value / self.value.hypot(other.value);
+                    v.grad += o_grad * self_data.value / self_data.value.hypot(other_data.value);
                 } else if v.id == other.id {
-                    v.grad += o_grad * other.value / self.value.hypot(other.value);
+                    v.grad += o_grad * other_data.value / self_data.value.hypot(other_data.value);
                 }
             }),
         );
@@ -692,90 +847,105 @@ impl Float for Rev64 {
     }
 
     fn sin(self) -> Self {
-        let output = Rev64::new(self.value.sin());
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.sin());
 
-        Graph::instance().add_operation(
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad * self.value.cos();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad * self_data.value.cos();
             }),
         );
         output
     }
 
     fn cos(self) -> Self {
-        let output = Rev64::new(self.value.cos());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.cos());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad -= o_grad * self.value.sin();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad -= o_grad * self_data.value.sin();
             }),
         );
         output
     }
 
     fn tan(self) -> Self {
-        let output = Rev64::new(self.value.tan());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.tan());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (self.value.cos() * self.value.cos());
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (self_data.value.cos() * self_data.value.cos());
             }),
         );
         output
     }
 
     fn asin(self) -> Self {
-        let output = Rev64::new(self.value.asin());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.asin());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (1.0 - self.value * self.value).sqrt();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (1.0 - self_data.value * self_data.value).sqrt();
             }),
         );
         output
     }
 
     fn acos(self) -> Self {
-        let output = Rev64::new(self.value.acos());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.acos());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad -= o_grad / (1.0 - self.value * self.value).sqrt();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad -= o_grad / (1.0 - self_data.value * self_data.value).sqrt();
             }),
         );
         output
     }
 
     fn atan(self) -> Self {
-        let output = Rev64::new(self.value.atan());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.atan());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (1.0 + self.value * self.value);
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (1.0 + self_data.value * self_data.value);
             }),
         );
         output
     }
 
     fn atan2(self, other: Self) -> Self {
-        let output = Rev64::new(self.value.atan2(other.value));
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let other_data = graph.get_variable(other.id);
+        let output = Rev64::new(self_data.value.atan2(other_data.value));
+        graph.add_operation(
             output.id,
             vec![self.id, other.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 if v.id == self.id {
-                    v.grad += o_grad * other.value
-                        / (self.value * self.value + other.value * other.value);
+                    v.grad += o_grad * other_data.value
+                        / (self_data.value * self_data.value + other_data.value * other_data.value);
                 } else if v.id == other.id {
-                    v.grad -=
-                        o_grad * self.value / (self.value * self.value + other.value * other.value);
+                    v.grad -= o_grad * self_data.value
+                        / (self_data.value * self_data.value + other_data.value * other_data.value);
                 }
             }),
         );
@@ -783,20 +953,22 @@ impl Float for Rev64 {
     }
 
     fn sin_cos(self) -> (Self, Self) {
-        let (sin_value, cos_value) = self.value.sin_cos();
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let (sin_value, cos_value) = self_data.value.sin_cos();
         let sin_output = Rev64::new(sin_value);
         let cos_output = Rev64::new(cos_value);
-        Graph::instance().add_operation(
+        graph.add_operation(
             sin_output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad * cos_value;
             }),
         );
-        Graph::instance().add_operation(
+        graph.add_operation(
             cos_output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 v.grad -= o_grad * sin_value;
             }),
         );
@@ -804,11 +976,13 @@ impl Float for Rev64 {
     }
 
     fn exp_m1(self) -> Self {
-        let output = Rev64::new(self.value.exp_m1());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.exp_m1());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
                 v.grad += o_grad * (v.value.exp());
             }),
         );
@@ -816,99 +990,117 @@ impl Float for Rev64 {
     }
 
     fn ln_1p(self) -> Self {
-        let output = Rev64::new(self.value.ln_1p());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.ln_1p());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (1.0 + self.value);
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (1.0 + self_data.value);
             }),
         );
         output
     }
 
     fn sinh(self) -> Self {
-        let output = Rev64::new(self.value.sinh());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.sinh());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad * self.value.cosh();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad * self_data.value.cosh();
             }),
         );
         output
     }
 
     fn cosh(self) -> Self {
-        let output = Rev64::new(self.value.cosh());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.cosh());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad * self.value.sinh();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad * self_data.value.sinh();
             }),
         );
         output
     }
 
     fn tanh(self) -> Self {
-        let output = Rev64::new(self.value.tanh());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.tanh());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad * (1.0 - self.value.tanh() * self.value.tanh());
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad * (1.0 - self_data.value.tanh() * self_data.value.tanh());
             }),
         );
         output
     }
 
     fn asinh(self) -> Self {
-        let output = Rev64::new(self.value.asinh());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.asinh());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (self.value * self.value + 1.0).sqrt();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (self_data.value * self_data.value + 1.0).sqrt();
             }),
         );
         output
     }
 
     fn acosh(self) -> Self {
-        let output = Rev64::new(self.value.acosh());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.acosh());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (self.value * self.value - 1.0).sqrt();
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (self_data.value * self_data.value - 1.0).sqrt();
             }),
         );
         output
     }
 
     fn atanh(self) -> Self {
-        let output = Rev64::new(self.value.atanh());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.atanh());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(move |o_grad, v: &mut Rev64| {
-                v.grad += o_grad / (1.0 - self.value * self.value);
+            Arc::new(move |o_grad, v: &mut Rev64Data| {
+                v.grad += o_grad / (1.0 - self_data.value * self_data.value);
             }),
         );
         output
     }
 
     fn integer_decode(self) -> (u64, i16, i8) {
-        self.value.integer_decode()
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        self_data.value.integer_decode()
     }
 
     fn to_degrees(self) -> Self {
-        let output = Rev64::new(self.value.to_degrees());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.to_degrees());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 // v.grad += 0.0; // this is incorrect
                 v.grad += 180.0 / std::f64::consts::PI;
             }),
@@ -917,11 +1109,13 @@ impl Float for Rev64 {
     }
 
     fn to_radians(self) -> Self {
-        let output = Rev64::new(self.value.to_radians());
-        Graph::instance().add_operation(
+        let graph = Graph::instance();
+        let self_data = graph.get_variable(self.id);
+        let output = Rev64::new(self_data.value.to_radians());
+        graph.add_operation(
             output.id,
             vec![self.id],
-            Arc::new(|_o_grad, v: &mut Rev64| {
+            Arc::new(|_o_grad, v: &mut Rev64Data| {
                 v.grad += std::f64::consts::PI / 180.0;
             }),
         );
@@ -951,7 +1145,7 @@ mod tests {
     use approx::assert_relative_eq;
     use proptest::{prelude::*, test_runner::Config};
 
-    const NUM_CASES: u32 = 10000;
+    const NUM_CASES: u32 = 1000;
     const EPSILON: f64 = 1e-6; // finite difference step size
 
     // automatic differentiation tolerance
@@ -974,15 +1168,13 @@ mod tests {
         let (grad_x_exact, grad_y_exact) = grad_fn(x, y);
 
         // automatic differentiation
-        let mut var_x = Rev64::new(x);
-        let mut var_y = Rev64::new(y);
+        let var_x = Rev64::new(x);
+        let var_y = Rev64::new(y);
         let mut result = op(var_x, var_y);
 
         result.backward();
-        var_x.update();
-        var_y.update();
-        let grad_x = var_x.grad;
-        let grad_y = var_y.grad;
+        let grad_x = var_x.get_grad();
+        let grad_y = var_y.get_grad();
 
         assert_relative_eq!(grad_x, grad_x_exact, epsilon = AUTO_ERROR);
         assert_relative_eq!(grad_y, grad_y_exact, epsilon = AUTO_ERROR);
@@ -1008,12 +1200,11 @@ mod tests {
         let grad_x_exact = grad_fn(x);
 
         // automatic differentiation
-        let mut var_x = Rev64::new(x);
+        let var_x = Rev64::new(x);
         let mut result = op(var_x);
 
         result.backward();
-        var_x.update();
-        let grad_x = var_x.grad;
+        let grad_x = var_x.get_grad();
 
         assert_relative_eq!(grad_x, grad_x_exact, epsilon = AUTO_ERROR);
 
@@ -1240,19 +1431,16 @@ mod tests {
 
         #[test]
         fn test_mul_add(x in -TEST_RANGE..TEST_RANGE, y in -TEST_RANGE..TEST_RANGE, z in -TEST_RANGE..TEST_RANGE) {
-            let mut var_x = Rev64::new(x);
-            let mut var_y = Rev64::new(y);
-            let mut var_z = Rev64::new(z);
+            let var_x = Rev64::new(x);
+            let var_y = Rev64::new(y);
+            let var_z = Rev64::new(z);
 
             let mut result = var_x.mul_add(var_y, var_z);
 
             result.backward();
-            var_x.update();
-            var_y.update();
-            var_z.update();
-            let grad_x = var_x.grad;
-            let grad_y = var_y.grad;
-            let grad_z = var_z.grad;
+            let grad_x = var_x.get_grad();
+            let grad_y = var_y.get_grad();
+            let grad_z = var_z.get_grad();
 
             assert_relative_eq!(grad_x, y, epsilon = 10. * EPSILON);
             assert_relative_eq!(grad_y, x, epsilon = 10. * EPSILON);

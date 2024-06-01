@@ -1,9 +1,6 @@
 use std::ops::Mul;
 
-use crate::{
-    backwards::{Graph, Rev64},
-    matrix::Matrix,
-};
+use crate::{backwards::Rev64, matrix::Matrix};
 
 impl<const ROWS: usize, const COLS: usize> Mul<Matrix<Rev64, ROWS, COLS>> for Rev64 {
     type Output = Matrix<Rev64, ROWS, COLS>;
@@ -51,13 +48,10 @@ impl<const ROW_IN: usize> Matrix<Rev64, ROW_IN, 1> {
         output: &mut Matrix<Rev64, ROW_OUT, 1>,
     ) -> Matrix<f64, ROW_OUT, ROW_IN> {
         let mut result = Matrix::zeros();
-        let graph = Graph::instance();
         for i in 0..ROW_OUT {
-            graph.reset_gradients();
             output[i][0].backward();
             for j in 0..ROW_IN {
-                self.data[j][0].update();
-                result.data[i][j] = self.data[j][0].grad;
+                result.data[i][j] = self.data[j][0].get_grad();
             }
         }
         result

@@ -1,4 +1,4 @@
-use autodiff::backwards::{Graph, Rev64};
+use autodiff::backwards::Rev64;
 use num_traits::float::Float;
 
 fn main() {
@@ -13,36 +13,15 @@ fn main() {
 
     // Perform the backward pass wrt `z` and print the gradients
     z.backward();
-    println!(
-        "Gradient of z w.r.t x: {}",
-        Graph::instance().get_variable(x.id).grad
-    );
-    println!(
-        "Gradient of z w.r.t y: {}",
-        Graph::instance().get_variable(y.id).grad
-    );
-
-    // Reset the gradients
-    Graph::instance().reset_gradients();
+    println!("Gradient of z w.r.t x: {}", x.get_grad());
+    println!("Gradient of z w.r.t y: {}", y.get_grad());
 
     // Perform the backward pass wrt `w` and print the gradients
     w.backward();
-    println!(
-        "Gradient of w w.r.t x: {}",
-        Graph::instance().get_variable(x.id).grad
-    );
-    println!(
-        "Gradient of w w.r.t y: {}",
-        Graph::instance().get_variable(y.id).grad
-    );
-
-    // Reset the gradients
-    Graph::instance().reset_gradients();
+    println!("Gradient of w w.r.t x: {}", x.get_grad());
+    println!("Gradient of w w.r.t y: {}", y.get_grad());
 
     // Perform the backward pass wrt `sin_0` and print the gradients
     sin.backward();
-    println!(
-        "Gradient of sin(0): {}",
-        Graph::instance().get_variable(sin_in.id).grad
-    );
+    println!("Gradient of sin(0): {}", sin_in.get_grad());
 }
